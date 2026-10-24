@@ -1,5 +1,14 @@
 .git
 .DS_Store
+.env
+.env.*
+!.env.example
+.secrets
+secrets
+*.pem
+*.key
+credentials*.json
+*-credentials.json
 evidence/captures/*
 __pycache__
 *.pyc

@@ -1,6 +1,15 @@
 __pycache__/
 *.py[cod]
 .venv/
+.env
+.env.*
+!.env.example
+.secrets/
+secrets/
+*.pem
+*.key
+credentials*.json
+*-credentials.json
 evidence/captures/*
 !evidence/captures/.gitkeep
 evidence/measurements/*
