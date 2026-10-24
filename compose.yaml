@@ -1,0 +1,166 @@
+name: routing-path-lab
+
+services:
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.host
+    image: routing-path-lab/host:0.1.0
+    hostname: client
+    command: ["sh", "-ec", "ip route replace 10.112.1.0/24 via 10.111.1.2; exec sleep infinity"]
+    cap_add: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    networks:
+      client_lan:
+        ipv4_address: 10.111.1.10
+        interface_name: eth1
+    healthcheck:
+      test: ["CMD", "ip", "route", "get", "10.112.1.10"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.host
+    image: routing-path-lab/host:0.1.0
+    hostname: web
+    command: ["sh", "-ec", "ip route replace 10.111.1.0/24 via 10.112.1.2; exec python /app/server.py"]
+    cap_add: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./app:/app:ro
+    networks:
+      server_lan:
+        ipv4_address: 10.112.1.10
+        interface_name: eth1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  edge-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    image: routing-path-lab/router:0.1.0
+    hostname: edge-a
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+    volumes:
+      - ./configs/frr/edge-a/frr.conf:/etc/frr/frr.conf:ro
+      - ./configs/frr/daemons:/etc/frr/daemons:ro
+      - ./evidence/captures:/captures
+    networks:
+      client_lan:
+        ipv4_address: 10.111.1.2
+        interface_name: eth1
+      transit_a:
+        ipv4_address: 172.16.10.2
+        interface_name: eth2
+      direct:
+        ipv4_address: 172.16.12.2
+        interface_name: eth3
+    healthcheck:
+      test: ["CMD-SHELL", "vtysh -c 'show ip route' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  transit-fw:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    image: routing-path-lab/router:0.1.0
+    hostname: transit-fw
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+    volumes:
+      - ./configs/frr/transit-fw/frr.conf:/etc/frr/frr.conf:ro
+      - ./configs/frr/daemons:/etc/frr/daemons:ro
+      - ./configs/nftables.conf:/etc/nftables.conf:ro
+      - ./scripts/firewall-entrypoint.sh:/usr/local/sbin/firewall-entrypoint.sh:ro
+      - ./evidence/captures:/captures
+    entrypoint: ["/bin/sh", "/usr/local/sbin/firewall-entrypoint.sh"]
+    networks:
+      transit_a:
+        ipv4_address: 172.16.10.3
+        interface_name: eth1
+      transit_b:
+        ipv4_address: 172.16.20.3
+        interface_name: eth2
+    healthcheck:
+      test: ["CMD-SHELL", "vtysh -c 'show ip route' >/dev/null && nft list chain inet routing_lab forward >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  edge-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    image: routing-path-lab/router:0.1.0
+    hostname: edge-b
+    cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.rp_filter: "0"
+      net.ipv4.conf.default.rp_filter: "0"
+    volumes:
+      - ./configs/frr/edge-b/frr.conf:/etc/frr/frr.conf:ro
+      - ./configs/frr/daemons:/etc/frr/daemons:ro
+      - ./evidence/captures:/captures
+    networks:
+      server_lan:
+        ipv4_address: 10.112.1.2
+        interface_name: eth1
+      transit_b:
+        ipv4_address: 172.16.20.2
+        interface_name: eth2
+      direct:
+        ipv4_address: 172.16.12.3
+        interface_name: eth3
+    healthcheck:
+      test: ["CMD-SHELL", "vtysh -c 'show ip route' >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+networks:
+  client_lan:
+    name: routing-path-lab-client-lan
+    ipam:
+      config:
+        - subnet: 10.111.1.0/24
+  server_lan:
+    name: routing-path-lab-server-lan
+    ipam:
+      config:
+        - subnet: 10.112.1.0/24
+  transit_a:
+    name: routing-path-lab-transit-a
+    ipam:
+      config:
+        - subnet: 172.16.10.0/29
+  transit_b:
+    name: routing-path-lab-transit-b
+    ipam:
+      config:
+        - subnet: 172.16.20.0/29
+  direct:
+    name: routing-path-lab-direct
+    ipam:
+      config:
+        - subnet: 172.16.12.0/29

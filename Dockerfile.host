@@ -1,0 +1,10 @@
+FROM python:3.12.8-slim-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 iputils-ping tcpdump curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY app/ /app/
+CMD ["sleep", "infinity"]
