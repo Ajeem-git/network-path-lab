@@ -15,6 +15,19 @@ class LabError(RuntimeError):
     pass
 
 
+SCENARIO_CHOICES = ("baseline", "asymmetric", "failover", "mitigate", "failover-blocked", "restore")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="action", required=True)
+    scenario = subparsers.add_parser("scenario", help="run an asserted routing experiment")
+    scenario.add_argument("name", choices=SCENARIO_CHOICES)
+    subparsers.add_parser("status", help="print BGP, route, and firewall state")
+    subparsers.add_parser("probe", help="issue one HTTP request from the client container")
+    return parser
+
+
 def compose(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         ["docker", "compose", *args],
@@ -88,6 +101,24 @@ def policy(direct_preference: int, transit_preference: int = 200) -> None:
     time.sleep(2)
 
 
+def direct_export_policy(permit: bool) -> None:
+    action = "permit" if permit else "deny"
+    for service, peer, prefix_list in (
+        ("edge-a", "172.16.12.3", "CLIENT"),
+        ("edge-b", "172.16.12.2", "SERVER"),
+    ):
+        commands = (
+            "configure terminal",
+            "no route-map DIRECT-OUT permit 10",
+            f"route-map DIRECT-OUT {action} 10",
+            f"match ip address prefix-list {prefix_list}",
+            "end",
+            f"clear ip bgp {peer} soft out",
+        )
+        inside(service, "vtysh", *sum((("-c", item) for item in commands), ()))
+    time.sleep(2)
+
+
 def wait_for_routes(checks: Sequence[tuple[str, str, str]], timeout: float = 45) -> None:
     deadline = time.monotonic() + timeout
     last_error = ""
@@ -102,6 +133,24 @@ def wait_for_routes(checks: Sequence[tuple[str, str, str]], timeout: float = 45)
             last_error = str(exc)
             time.sleep(1)
     raise LabError(f"Routes did not converge within {timeout:.0f}s: {last_error}")
+
+
+def wait_for_no_routes(checks: Sequence[tuple[str, str]], timeout: float = 45) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        pending = []
+        for service, destination in checks:
+            result = compose("exec", "-T", service, "ip", "route", "get", destination, check=False)
+            if result.returncode == 0:
+                pending.append(f"{service} still routes {destination} via {result.stdout.strip()}")
+            elif "Network is unreachable" not in result.stdout:
+                raise LabError(f"Unexpected route lookup failure on {service}: {result.stdout.strip()}")
+        if not pending:
+            return
+        last_error = "; ".join(pending)
+        time.sleep(1)
+    raise LabError(f"Protected routes were not withdrawn within {timeout:.0f}s: {last_error}")
 
 
 def run_scenario(name: str) -> None:
@@ -132,6 +181,7 @@ def run_scenario(name: str) -> None:
             raise LabError("Expected the firewall drop counter to increase after the asymmetric probe")
         print("PASS: the direct return path bypasses conntrack; later client packets are dropped by the firewall.")
     elif name == "failover":
+        direct_export_policy(True)
         inside("edge-a", "ip", "link", "set", "dev", "eth2", "down")
         checks = (("edge-a", "10.112.1.10", "eth3"), ("edge-b", "10.111.1.10", "eth3"))
         wait_for_routes(checks)
@@ -141,9 +191,33 @@ def run_scenario(name: str) -> None:
         if status != 200:
             raise LabError(f"Expected HTTP 200 over the direct failover path, got {status}")
         print("PASS: BGP reconverged over the direct edge link; the firewall is bypassed.")
+    elif name == "mitigate":
+        inside("edge-a", "ip", "link", "set", "dev", "eth2", "up")
+        policy(100)
+        direct_export_policy(False)
+        checks = (("edge-a", "10.112.1.10", "eth2"), ("edge-b", "10.111.1.10", "eth2"))
+        wait_for_routes(checks)
+        for service, destination, device in checks:
+            expect_route(service, destination, device)
+        status = probe()
+        if status != 200:
+            raise LabError(f"Expected HTTP 200 through the firewall after mitigation, got {status}")
+        print("PASS: protected prefixes use inspected transit; direct BGP advertisements are denied.")
+    elif name == "failover-blocked":
+        direct_export_policy(False)
+        inside("edge-a", "ip", "link", "set", "dev", "eth2", "down")
+        checks = (("edge-a", "10.112.1.10"), ("edge-b", "10.111.1.10"))
+        wait_for_no_routes(checks)
+        for service, destination in checks:
+            print(f"{service} -> {destination}: no route (fail closed)")
+        status = probe()
+        if status == 200:
+            raise LabError("Expected protected service to be unavailable when inspected transit fails")
+        print("PASS: no direct route is advertised; service fails closed instead of bypassing inspection.")
     elif name == "restore":
         inside("edge-a", "ip", "link", "set", "dev", "eth2", "up")
         policy(100)
+        direct_export_policy(True)
         checks = (("edge-a", "10.112.1.10", "eth2"), ("edge-b", "10.111.1.10", "eth2"))
         wait_for_routes(checks)
         for service, destination, device in checks:
@@ -169,13 +243,7 @@ def status() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="action", required=True)
-    scenario = subparsers.add_parser("scenario", help="run an asserted routing experiment")
-    scenario.add_argument("name", choices=("baseline", "asymmetric", "failover", "restore"))
-    subparsers.add_parser("status", help="print BGP, route, and firewall state")
-    subparsers.add_parser("probe", help="issue one HTTP request from the client container")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     try:
         if args.action == "scenario":
             run_scenario(args.name)

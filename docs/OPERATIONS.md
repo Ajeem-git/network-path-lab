@@ -8,15 +8,28 @@ docker compose up --build -d
 docker compose ps
 python3 app/labctl.py status
 python3 app/labctl.py scenario baseline
+python3 app/labctl.py scenario mitigate
+python3 app/labctl.py scenario failover-blocked
+python3 app/labctl.py scenario restore
 docker compose down
 ```
 
 Run `docker compose down --rmi local` to remove locally built images too.
-Scenario runner commands must be run from the project root. It changes only
-Edge-B's in-memory LOCAL_PREF policy and Edge-A's in-container `eth2` state;
-`restore` returns those changes to baseline. If a scenario is interrupted or
-the current state is unknown, run restore; if that does not converge, recreate
-the lab with `docker compose down && docker compose up --build -d`.
+Scenario runner commands must be run from the project root. The runner changes
+in-memory LOCAL_PREF, direct-peer route maps, and Edge-A's `eth2` state.
+`restore` returns these to baseline. The router entrypoint removes each
+container's Docker-injected default route; protected traffic therefore cannot
+fall through an unmodeled default path when BGP withdraws its route. If a
+scenario is interrupted or the current state is unknown, run restore; if that
+does not converge, recreate the lab with
+`docker compose down && docker compose up --build -d`.
+
+The production-style incident sequence is documented in
+[`INCIDENT.md`](INCIDENT.md). `failover` intentionally demonstrates a fail-open
+design; use `mitigate` to filter protected-prefix advertisements on direct
+peers, then `failover-blocked` to verify that transit loss causes an outage
+instead of firewall bypass. This is a teaching model, not a production change
+procedure.
 
 Captured packet files go to `evidence/captures/` and are ignored by version
 control. Keep only captures needed for a report; inspect packet data before
@@ -100,9 +113,11 @@ python3 app/labctl.py status
 ```
 
 `failover` leaves Edge-A's interface down until `restore`. `asymmetric` changes
-Edge-B's in-memory route preference until `restore`. These changes are not
-written to the mounted FRR configuration and disappear when containers are
-recreated.
+Edge-B's in-memory route preference until `restore`. `mitigate` changes
+direct-peer outbound route maps in memory; `failover-blocked` leaves Edge-A's
+transit interface down. These changes are not written to the mounted FRR
+configuration and disappear when containers are recreated. Always use
+`restore` before unrelated experiments.
 
 ## Platform and evidence notes
 

@@ -47,5 +47,40 @@ class DropCounterTests(unittest.TestCase):
             labctl.parse_drop_counter("ct state established counter packets 4 bytes 240 accept")
 
 
+class PolicyTests(unittest.TestCase):
+    @patch("labctl.time.sleep")
+    @patch("labctl.inside")
+    def test_direct_export_policy_denies_protected_prefixes_at_both_edges(self, inside, _sleep):
+        labctl.direct_export_policy(False)
+        self.assertEqual(inside.call_count, 2)
+        self.assertEqual(inside.call_args_list[0][0][0], "edge-a")
+        self.assertIn("-c", inside.call_args_list[0][0])
+        self.assertIn("route-map DIRECT-OUT deny 10", inside.call_args_list[0][0])
+        self.assertIn("match ip address prefix-list CLIENT", inside.call_args_list[0][0])
+        self.assertIn("clear ip bgp 172.16.12.3 soft out", inside.call_args_list[0][0])
+        self.assertEqual(inside.call_args_list[1][0][0], "edge-b")
+        self.assertIn("route-map DIRECT-OUT deny 10", inside.call_args_list[1][0])
+        self.assertIn("match ip address prefix-list SERVER", inside.call_args_list[1][0])
+        self.assertIn("clear ip bgp 172.16.12.2 soft out", inside.call_args_list[1][0])
+
+    @patch("labctl.time.sleep")
+    @patch("labctl.inside")
+    def test_direct_export_policy_can_restore_permitted_experiment_path(self, inside, _sleep):
+        labctl.direct_export_policy(True)
+        self.assertTrue(all("route-map DIRECT-OUT permit 10" in call_args[0] for call_args in inside.call_args_list))
+
+    def test_scenario_parser_exposes_incident_and_recovery_commands(self):
+        parser = labctl.build_parser()
+        scenario_action = next(
+            action
+            for action in parser._subparsers._group_actions[0].choices["scenario"]._actions
+            if action.dest == "name"
+        )
+        self.assertEqual(set(scenario_action.choices), set(labctl.SCENARIO_CHOICES))
+        self.assertIn("mitigate", scenario_action.choices)
+        self.assertIn("failover-blocked", scenario_action.choices)
+        self.assertIn("restore", scenario_action.choices)
+
+
 if __name__ == "__main__":
     unittest.main()

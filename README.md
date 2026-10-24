@@ -89,7 +89,16 @@ python3 app/labctl.py probe
 python3 app/labctl.py scenario baseline
 python3 app/labctl.py scenario asymmetric
 python3 app/labctl.py scenario failover
+python3 app/labctl.py scenario mitigate
+python3 app/labctl.py scenario failover-blocked
 python3 app/labctl.py scenario restore
+```
+
+Incident exercise (service-restoring but inspection-bypassing failover, then
+fail-closed remediation):
+
+```sh
+make incident
 ```
 
 The baseline expects Edge-A to send server traffic on `eth2` and Edge-B to send
@@ -104,6 +113,24 @@ always break TCP. The failover experiment expects both edge routers to select
 `eth3` after Edge-A's transit interface is brought down and HTTP to recover
 over that direct link, which bypasses the firewall.
 
+### Production-style incident and remediation
+
+The added [`docs/INCIDENT.md`](docs/INCIDENT.md) turns the topology into a
+realistic operational exercise: an automatic BGP failover restores HTTP but
+violates a firewall-inspection requirement. Reproduce the incident with
+`scenario failover`, then run `scenario mitigate` to deny the client/server
+prefixes on direct eBGP export while keeping the inspected transit route. Finally
+run `scenario failover-blocked`: with transit down, both protected prefixes are
+withdrawn and the service becomes unavailable rather than silently bypassing
+inspection. `scenario restore` returns the router link and policy to baseline.
+
+This is a deliberate fail-closed trade-off, not a claim that route filtering
+alone is a complete production security architecture. Router containers remove
+their Docker default route to avoid an unmodeled fallback path. In production,
+apply equivalent prefix/path controls at every relevant routing boundary,
+monitor policy and session state, define explicit service-level availability
+objectives, and test all alternate paths.
+
 ### Measured run (2026-10-24, Docker Desktop on aarch64)
 
 These are actual outputs from the scenario runner in this project environment,
@@ -116,6 +143,14 @@ not predictions. Runtime: Docker Engine 29.9.2, Compose 5.6.1, FRRouting
 | Asymmetric | `eth2` (firewall) | `eth3` (direct) | HTTP timeout; forward-chain drop counter increased by 9 packets |
 | Transit failure | `eth3` (direct) | `eth3` (direct) | HTTP 200; direct bypass |
 | Restored | `eth2` (firewall) | `eth2` (firewall) | HTTP 200 |
+
+After adding the firewall-only mitigation, the incident validation also
+measured: `mitigate` kept both routes on `eth2` with HTTP 200; `failover-blocked`
+withdrew both protected routes and the HTTP probe returned `Network is
+unreachable`; `restore` returned both routes to `eth2` and HTTP 200. Lab BGP
+neighbors use 3-second keepalive and 9-second hold timers to make the simulated
+failure exercise bounded; this is a lab setting, not a production timer
+recommendation.
 
 The asymmetric timeout follows from the specific forward-chain policy and
 forward/return path observed in this implementation. Re-run the scenarios on

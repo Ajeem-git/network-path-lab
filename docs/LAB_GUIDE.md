@@ -23,7 +23,9 @@ By the end, you can:
    distinguish policy bypass from application failure.
 5. Trigger a BGP adjacency failure, measure route convergence, and restore the
    original symmetric state.
-6. Design assertions that test outcomes without assuming an unmeasured timeout,
+6. Diagnose a fail-open recovery, apply a prefix-scoped fail-closed export
+   policy, and articulate its availability trade-off.
+7. Design assertions that test outcomes without assuming an unmeasured timeout,
    and explain the model's limitations versus physical or cloud networks.
 
 ### Prerequisites and safety boundaries
@@ -306,7 +308,53 @@ and an application failure can have different detection times.
 not? How would BFD or tuned hold timers affect detection? What security
 trade-off did this failover policy make?
 
-## Lab 7 — Test design and evidence quality
+## Lab 7 — Incident response: preserve inspection on failover
+
+The incident narrative, evidence checklist, rollback, and residual-risk
+template are in [`INCIDENT.md`](INCIDENT.md). This lab operationalizes it.
+
+**Prediction:** The deliberately fail-open `failover` scenario restores HTTP
+through direct `eth3`; this violates the inspection requirement even though
+the service is available. After applying `mitigate`, the protected prefixes
+are not exported to the direct peer. If transit fails, the routes disappear
+and the service becomes unavailable rather than bypassing the firewall.
+
+**Commands:**
+
+```sh
+python3 app/labctl.py scenario failover
+python3 app/labctl.py scenario restore
+python3 app/labctl.py scenario mitigate
+python3 app/labctl.py status
+python3 app/labctl.py scenario failover-blocked
+python3 app/labctl.py scenario restore
+```
+
+Run `restore` between the two different failure modes. Each scenario changes
+in-memory router state. Recreate the lab if state is unknown:
+`docker compose down && docker compose up --build -d`.
+
+**Evidence:** For the fail-open case, retain route lookups for both endpoints
+and HTTP status 200. For mitigation, inspect BGP routes and selected FIB
+interfaces; both should use transit `eth2`. Under blocked failover, confirm
+the protected routes are withdrawn (no route lookup succeeds), HTTP is not
+200, and the firewall remains the only advertised path when transit is up.
+
+**Interpretation:** Availability and policy compliance are distinct
+objectives. The added `DIRECT-OUT` route maps deny `10.111.1.0/24` and
+`10.112.1.0/24` only on the direct eBGP adjacencies; the firewall transit
+advertisements remain allowed. The router entrypoint removes Docker's
+injected default route so a missing protected BGP route cannot fall through
+to an unmodeled gateway. The fail-closed outcome is an intentional availability
+loss. In production, an alternate path must itself meet inspection requirements
+before it can satisfy both goals.
+
+**Reflection:** What evidence would prove that only the protected prefixes are
+filtered? How might a more-specific prefix, route leak, policy-order mistake,
+or new peer defeat this remediation? What SLO and escalation path should
+accompany a security-mandated outage?
+
+## Lab 8 — Test design and evidence quality
 
 **Prediction:** A sound test will distinguish the expected route, policy,
 packet path, and application outcome; none alone proves every layer.
@@ -333,7 +381,7 @@ network.
 What test would catch an accidentally broadened nftables rule? How would you
 avoid a flaky fixed sleep when testing convergence?
 
-## Lab 8 — Limitations and architecture trade-offs
+## Lab 9 — Limitations and architecture trade-offs
 
 Discuss each limitation using evidence from this project:
 
